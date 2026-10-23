@@ -1,0 +1,86 @@
+name: validation
+
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build both targets, run the tests and the Linux build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.17.0
+      - name: Run the parser's tests
+        run: zig build test --summary all
+      - name: Build the release archives
+        run: |
+          release/stage.sh linux dist
+          release/stage.sh windows dist
+      - name: Start the Linux build and draw a file
+        run: |
+          set -euo pipefail
+          mkdir run
+          tar -xzf dist/*-x86_64-linux.tar.gz -C run
+          exe=$(echo run/*/vellum)
+          "$exe" --help | grep -q -- --shot
+          "$exe" tests/sample.md --shot "$RUNNER_TEMP/shot.png" --size 900 1100
+          file "$RUNNER_TEMP/shot.png" | grep -q 'PNG image data'
+      - name: Keep the Windows archive for its test
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: validation-windows
+          path: dist/*-x86_64-windows.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    name: Run the Windows build
+    needs: build
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Check out the sample file
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: tests
+      - name: Download the Windows archive
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: validation-windows
+          path: dist
+      - name: Start it and draw a file
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Expand-Archive -Path (Get-Item dist\*.zip) -DestinationPath run
+          $exe = (Get-Item run\*\vellum.exe).FullName
+          $shot = Join-Path $env:RUNNER_TEMP 'shot.png'
+          $p = Start-Process -FilePath $exe -Wait -PassThru -ArgumentList @('tests\sample.md', '--shot', $shot, '--size', '900', '1100')
+          if ($p.ExitCode -ne 0) { throw "vellum.exe exited with $($p.ExitCode)" }
+          if ((Get-Item $shot).Length -eq 0) { throw 'nothing drawn' }
+
+  validate:
+    name: validate
+    if: always()
+    needs:
+      - build
+      - windows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require both targets to have built and run
+        uses: wakamex/release-actions/validate-gate@stable
+        with:
+          needs: ${{ toJSON(needs) }}

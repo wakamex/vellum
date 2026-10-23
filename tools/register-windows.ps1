@@ -1,9 +1,10 @@
 # Installs vellum for the current user and makes it what opens .md and .markdown files:
-#   powershell -ExecutionPolicy Bypass -File tools\register-windows.ps1 [-From PATH\vellum.exe]
+#   powershell -ExecutionPolicy Bypass -File register-windows.ps1 [-From PATH\vellum.exe]
 # It copies the program to %LOCALAPPDATA%\Programs\vellum and writes the association under
 # HKCU\Software\Classes, which needs no administrator. Where another program already holds .md
 # as the user's own choice (Settings, Default apps), Windows keeps that choice; pick vellum there.
-param([string]$From = "$PSScriptRoot\..\zig-out\bin\vellum.exe")
+# From a release archive it takes the vellum.exe beside it, and from a checkout the built one.
+param([string]$From = $(if (Test-Path "$PSScriptRoot\vellum.exe") { "$PSScriptRoot\vellum.exe" } else { "$PSScriptRoot\..\zig-out\bin\vellum.exe" }))
 $dir = "$env:LOCALAPPDATA\Programs\vellum"
 New-Item -ItemType Directory -Force $dir | Out-Null
 Copy-Item $From "$dir\vellum.exe" -Force

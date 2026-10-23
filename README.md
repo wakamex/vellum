@@ -2,13 +2,17 @@
 
 A Markdown viewer and editor for Windows, macOS and Linux, small enough to leave open: one executable of a few megabytes, built on [gesso](https://github.com/wakamex/gesso), a C library on [Simple DirectMedia Layer (SDL)](https://www.libsdl.org/). It shows a file as GitHub does (headings, lists and task lists, quotes, code, tables, pictures, links, bold, italic and inline code), reads it again when it changes on disk, and edits its text in place.
 
-## Install on Windows
+## Install
+
+Download the archive for your system from [Releases](https://github.com/wakamex/vellum/releases): `vellum-vX.Y.Z-x86_64-windows.zip` or `vellum-vX.Y.Z-x86_64-linux.tar.gz`. Each holds the one program and the licences of what is in it.
+
+On Windows, unpack it and run
 
 ```
-powershell -ExecutionPolicy Bypass -File tools\register-windows.ps1 -From PATH\TO\vellum.exe
+powershell -ExecutionPolicy Bypass -File register-windows.ps1
 ```
 
-copies vellum to `%LOCALAPPDATA%\Programs\vellum` and makes it what opens `.md` and `.markdown` files for the current user, with no administrator needed. Where another program is already the chosen default for `.md` (Settings, Default apps), Windows keeps that choice, and vellum is picked there instead.
+which copies vellum to `%LOCALAPPDATA%\Programs\vellum` and makes it what opens `.md` and `.markdown` files for the current user, with no administrator needed. Where another program is already the chosen default for `.md` (Settings, Default apps), Windows keeps that choice, and vellum is picked there instead.
 
 ## Use
 
@@ -46,12 +50,13 @@ It draws with SDL's software renderer: a frame of scrolling takes 3.9 ms at 1920
 
 ## Build
 
-Needs [Zig](https://ziglang.org/) 0.17.0 and [gesso](https://github.com/wakamex/gesso) checked out beside this folder, at `../gesso`.
+Needs [Zig](https://ziglang.org/) 0.17.0. The build fetches [gesso](https://github.com/wakamex/gesso) at the commit `build.zig.zon` pins.
 
 ```
 zig build -Doptimize=ReleaseSmall          # zig-out/bin/vellum
 zig build -Doptimize=ReleaseSmall -Dtarget=x86_64-windows-gnu
 zig build test                             # the parser's tests
+powershell -ExecutionPolicy Bypass -File tools\register-windows.ps1   # on Windows, after a build
 ```
 
 `vellum FILE.md --shot OUT.png [--size W H] [--scroll Y]` draws a file once without showing a window and saves the picture, for checking how it looks.

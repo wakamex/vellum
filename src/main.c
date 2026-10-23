@@ -501,6 +501,15 @@ static void frame(app *a) {
 
 static gs_fontset *mono_italic(void) { return gs_fontset_system_italic(400, true); }
 
+static const char usage[] =
+    "usage: vellum [FILE.md] [--gpu] [--shot OUT.png | --bench] [--size W H] [--scroll Y]\n"
+    "  Shows a Markdown file, reads it again when it changes, and edits it (Ctrl+E, Ctrl+S).\n"
+    "  --gpu            draw with the GPU rather than SDL's software renderer\n"
+    "  --shot OUT.png   draw the file once without a window and save the picture\n"
+    "  --bench          time the frames of scrolling down the file\n"
+    "  --size W H       the window's size for --shot and --bench\n"
+    "  --scroll Y       how far down the file --shot starts, in points\n";
+
 int main(int argc, char **argv) {
     const char *file = NULL, *shot = NULL;
     bool bench = false, gpu = false;
@@ -512,7 +521,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--scroll") && i + 1 < argc) shot_scroll = (float)atof(argv[++i]);
         else if (!strcmp(argv[i], "--bench")) bench = true;
         else if (!strcmp(argv[i], "--gpu")) gpu = true;
-        else if (argv[i][0] == '-') return fprintf(stderr, "usage: vellum [FILE.md] [--gpu] [--shot OUT.png | --bench] [--size W H] [--scroll Y]\n"), 2;
+        else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) return printf("%s", usage), 0;
+        else if (argv[i][0] == '-') return fprintf(stderr, "%s", usage), 2;
         else file = argv[i];
     }
     SDL_SetAppMetadata("vellum", "0.1", "dev.wakamex.vellum");
