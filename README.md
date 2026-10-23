@@ -22,6 +22,20 @@ Or drop a file on the window, or open one with Ctrl+O.
 
 A link to a Markdown file beside this one opens it here, a `#heading` link scrolls to that heading, and any other link opens in the system's browser. The window comes back where it was. It follows the system's light or dark theme.
 
+## What it costs
+
+Measured on a Windows 11 PC (16 cores, 32 GB) with the window open on a README of 7 KB, against Cursor viewing Markdown on the same machine:
+
+| | vellum | Cursor |
+|---|---|---|
+| Processes | 1 | 16 |
+| Memory, private | 25 MB | 1,784 MB |
+| Threads | 10 | (not measured) |
+| CPU while idle, over 10 s | 0% | 2 to 10% of one core |
+| On disk | 3.3 MB, one file | 2.5 GB |
+
+It draws with SDL's software renderer: a frame of scrolling takes 3.9 ms at 1920 by 1080 and 3.7 ms at 2560 by 1400, the slowest 5.7 ms, while drawing with the GPU through Direct3D 11 costs some 50 MB more memory and 30 more threads for frames of 2 ms. `--gpu` draws with the GPU. `vellum FILE.md --bench --size W H` times the frames of scrolling a file.
+
 ## Build
 
 Needs [Zig](https://ziglang.org/) 0.17.0 and gesso checked out beside this folder, at `../gesso`.

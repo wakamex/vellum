@@ -1,7 +1,10 @@
 // vellum: a Markdown viewer and editor on gesso.
 //   vellum [FILE.md]            open a file (or drop one on the window, or Ctrl+O)
+//   vellum FILE.md --gpu        draw with the GPU rather than SDL's software renderer
 //   vellum FILE.md --shot OUT.png [--size W H] [--scroll Y]
 //                               draw it once without showing a window and save the picture
+//   vellum FILE.md --bench [--size W H]
+//                               time the frames of scrolling down the file
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -74,6 +77,7 @@ typedef struct {
     char message[256];
     float scroll_to;    // -1, or where to scroll the page next frame
     Uint64 checked;     // when the file was last looked at for changes
+    Uint64 frames;      // drawn, since it started
 } app;
 
 static const char *ext(const char *path) {
@@ -166,17 +170,18 @@ static bool open_file(app *a, const char *path, bool remember) {
     return true;
 }
 
-// The file changed on disk, and nothing here is unsaved: read it again, at the same place.
-static void watch(app *a) {
+// The file changed on disk, and nothing here is unsaved: read it again, at the same place. True when it was.
+static bool watch(app *a) {
     Uint64 now = SDL_GetTicks();
-    if (!a->path[0] || a->dirty || now - a->checked < 1000) return;
+    if (!a->path[0] || a->dirty || a->editing || now - a->checked < 1000) return false;
     a->checked = now;
     SDL_PathInfo info;
-    if (!SDL_GetPathInfo(a->path, &info) || info.modify_time == a->modified) return;
+    if (!SDL_GetPathInfo(a->path, &info) || info.modify_time == a->modified) return false;
     float at = gs_ui_page_scroll(a->ui, "doc");
     char path[1024];
     SDL_strlcpy(path, a->path, sizeof path);
     if (open_file(a, path, false)) a->scroll_to = at;
+    return true;
 }
 
 static bool save(app *a) {
@@ -498,32 +503,40 @@ static gs_fontset *mono_italic(void) { return gs_fontset_system_italic(400, true
 
 int main(int argc, char **argv) {
     const char *file = NULL, *shot = NULL;
+    bool bench = false, gpu = false;
     int shot_w = 1100, shot_h = 900;
     float shot_scroll = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--shot") && i + 1 < argc) shot = argv[++i];
         else if (!strcmp(argv[i], "--size") && i + 2 < argc) shot_w = atoi(argv[i + 1]), shot_h = atoi(argv[i + 2]), i += 2;
         else if (!strcmp(argv[i], "--scroll") && i + 1 < argc) shot_scroll = (float)atof(argv[++i]);
-        else if (argv[i][0] == '-') return fprintf(stderr, "usage: vellum [FILE.md] [--shot OUT.png [--size W H] [--scroll Y]]\n"), 2;
+        else if (!strcmp(argv[i], "--bench")) bench = true;
+        else if (!strcmp(argv[i], "--gpu")) gpu = true;
+        else if (argv[i][0] == '-') return fprintf(stderr, "usage: vellum [FILE.md] [--gpu] [--shot OUT.png | --bench] [--size W H] [--scroll Y]\n"), 2;
         else file = argv[i];
     }
     SDL_SetAppMetadata("vellum", "0.1", "dev.wakamex.vellum");
     SDL_SetAppMetadataProperty(SDL_PROP_APP_METADATA_CREATOR_STRING, "wakamex");
     if (shot) SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen"), SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");
+    if (bench) SDL_SetHint(SDL_HINT_RENDER_VSYNC, "0");
+    // SDL's software renderer unless asked for the GPU: a page of text drawn only when it changes
+    // takes under 4 ms a frame on a 1440p window, and the GPU's driver costs some 50 MB more memory and
+    // 30 more threads for nothing a viewer uses (Windows 11 with Direct3D 11 on an NVIDIA card).
+    if (!gpu && !SDL_getenv("SDL_RENDER_DRIVER")) SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");
     if (!SDL_Init(SDL_INIT_VIDEO)) return fprintf(stderr, "vellum: %s\n", SDL_GetError()), 1;
     static app a;
     a.scroll_to = -1;
     SDL_PropertiesID p = SDL_CreateProperties();
     SDL_SetStringProperty(p, SDL_PROP_WINDOW_CREATE_TITLE_STRING, "vellum");
-    SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, shot ? shot_w : 1000);
-    SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, shot ? shot_h : 800);
+    SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, shot || bench ? shot_w : 1000);
+    SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, shot || bench ? shot_h : 800);
     SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN);
     if (shot) SDL_SetBooleanProperty(p, SDL_PROP_WINDOW_CREATE_EXTERNAL_GRAPHICS_CONTEXT_BOOLEAN, true);
     a.win = SDL_CreateWindowWithProperties(p);
     SDL_DestroyProperties(p);
     a.r = a.win ? SDL_CreateRenderer(a.win, NULL) : NULL;
     if (!a.r) return fprintf(stderr, "vellum: %s\n", SDL_GetError()), 1;
-    SDL_SetRenderVSync(a.r, 1);
+    SDL_SetRenderVSync(a.r, bench ? 0 : 1);
     a.fonts[FONT_PLAIN] = gs_fontset_system();
     a.fonts[FONT_BOLD] = gs_fontset_system_weight(700);
     a.fonts[FONT_ITALIC] = gs_fontset_system_italic(400, false);
@@ -540,6 +553,21 @@ int main(int argc, char **argv) {
     a.images = gs_images_new(a.r, a.jobs, 64 << 20);
     open_event = SDL_RegisterEvents(1);
     if (file) open_file(&a, file, false);
+    if (bench) {  // the time a frame takes while scrolling down the file, a few points a frame
+        SDL_ShowWindow(a.win);
+        for (int i = 0; i < 5; i++) frame(&a), SDL_RenderPresent(a.r);
+        Uint64 t0 = SDL_GetTicksNS(), worst = 0;
+        int n = 0;
+        for (float y = 0; n < 300; y += 7, n++) {
+            Uint64 f0 = SDL_GetTicksNS();
+            gs_ui_page_scroll_to(a.ui, "doc", y, false);
+            frame(&a);
+            SDL_RenderPresent(a.r);
+            worst = SDL_max(worst, SDL_GetTicksNS() - f0);
+        }
+        printf("%s renderer, %d by %d: %.2f ms a frame scrolling, %.2f ms the slowest\n", SDL_GetRendererName(a.r), shot_w, shot_h, (SDL_GetTicksNS() - t0) / 1e6 / n, worst / 1e6);
+        return 0;
+    }
     if (shot) {  // a few frames, for the glyphs drawn new to the atlas and the pictures loading
         a.t = light;
         if (a.d) parse_source(&a);
@@ -555,10 +583,13 @@ int main(int argc, char **argv) {
     }
     SDL_ShowWindow(a.win);
     for (bool running = true; running;) {
+        // A frame is drawn for an event, for what the interface asked a frame for, and for the file
+        // read again; in between it sleeps, waking once a second only to look at the file.
         SDL_Event e;
-        int wait = gs_ui_wait_ms(a.ui);
-        if (wait < 0 || wait > 1000) wait = 1000;  // (and once a second, to see whether the file changed)
+        int asked = gs_ui_wait_ms(a.ui), wait = asked < 0 || asked > 1000 ? 1000 : asked;
+        bool draw = asked >= 0 && asked <= 1000;
         if (SDL_WaitEventTimeout(&e, wait)) {
+            draw = true;
             do {
                 if (e.type == SDL_EVENT_QUIT || e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) running = false;
                 else if (e.type == SDL_EVENT_DROP_FILE && e.drop.data) open_file(&a, e.drop.data, true);
@@ -567,10 +598,13 @@ int main(int argc, char **argv) {
                 gs_ui_event(a.ui, &e);
             } while (SDL_PollEvent(&e));
         }
-        watch(&a);
+        if (watch(&a)) draw = true;
+        if (!draw) continue;
         frame(&a);
         SDL_RenderPresent(a.r);
+        a.frames++;
     }
+    if (SDL_getenv("VELLUM_FRAMES")) fprintf(stderr, "vellum: %llu frames drawn\n", (unsigned long long)a.frames);  // (for checking that it sleeps)
     gs_ui_free(a.ui);
     free_view(&a);
     gs_images_free(a.images), gs_jobs_free(a.jobs);
