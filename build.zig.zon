@@ -1,0 +1,10 @@
+.{
+    .name = .vellum,
+    .version = "0.1.0",
+    .fingerprint = 0x6c1d5deb6f407f15,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .gesso = .{ .path = "../gesso" },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "vendor", "tests", "README.md" },
+}
