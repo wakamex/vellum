@@ -46,7 +46,7 @@ It draws with SDL's software renderer: a frame of scrolling takes 3.9 ms at 1920
 
 ## Build
 
-Needs [Zig](https://ziglang.org/) 0.17.0 and gesso checked out beside this folder, at `../gesso`.
+Needs [Zig](https://ziglang.org/) 0.17.0 and [gesso](https://github.com/wakamex/gesso) checked out beside this folder, at `../gesso`.
 
 ```
 zig build -Doptimize=ReleaseSmall          # zig-out/bin/vellum
@@ -61,3 +61,7 @@ zig build test                             # the parser's tests
 [md4c](https://github.com/mity/md4c) (MIT licence, vendored in `vendor/md4c`) parses the Markdown as GitHub writes it. `src/doc.c` turns its events into blocks of text with spans for fonts, links and inline code, and `src/main.c` lays them out with gesso's wrapped text in several fonts (`gs_ui_text_spans`), which also gives selection across paragraphs and clickable links. Only what is on screen is shaped and drawn, and the window draws nothing while nothing changes.
 
 Not done: editing in the rendered page itself (the editor is the file's text), raw HTML (left out), strikethrough is drawn grey rather than struck, and a table cell set to the right or centre only when it fits on one line.
+
+## License
+
+vellum is under the MIT licence in [LICENSE](LICENSE). md4c, in `vendor/md4c`, is under its own MIT licence, in [vendor/md4c/LICENSE.md](vendor/md4c/LICENSE.md).
