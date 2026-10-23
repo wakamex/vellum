@@ -14,6 +14,13 @@ powershell -ExecutionPolicy Bypass -File register-windows.ps1
 
 which copies vellum to `%LOCALAPPDATA%\Programs\vellum` and makes it what opens `.md` and `.markdown` files for the current user, with no administrator needed. Where another program is already the chosen default for `.md` (Settings, Default apps), Windows keeps that choice, and vellum is picked there instead.
 
+To check that a download is the one this repository's release workflow built, with the [GitHub CLI](https://cli.github.com/):
+
+```
+gh attestation verify ASSET --repo wakamex/vellum --signer-workflow wakamex/release-actions/.github/workflows/binary-release.yml
+gh release verify-asset vX.Y.Z ASSET --repo wakamex/vellum
+```
+
 ## Use
 
 ```
