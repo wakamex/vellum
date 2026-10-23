@@ -6,5 +6,5 @@
     .dependencies = .{
         .gesso = .{ .path = "../gesso" },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "src", "vendor", "tests", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "vendor", "tests", "assets", "tools", "README.md" },
 }

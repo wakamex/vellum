@@ -23,8 +23,12 @@ pub fn build(b: *std.Build) void {
     mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{"main.c"}, .flags = flags });
     mod.linkLibrary(gesso);
     const exe = b.addExecutable(.{ .name = "vellum", .root_module = mod });
-    // A window program on Windows: no console comes up with it.
-    if (target.result.os.tag == .windows) exe.subsystem = .windows;
+    // A window program on Windows: no console comes up with it. Its icon (assets/icon/update.sh makes
+    // it) is resource 1, which Explorer shows and the window takes.
+    if (target.result.os.tag == .windows) {
+        exe.subsystem = .windows;
+        mod.addWin32ResourceFile(.{ .file = b.path("assets/icon/vellum.rc") });
+    }
     b.installArtifact(exe);
 
     const tests = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });

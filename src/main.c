@@ -523,6 +523,7 @@ int main(int argc, char **argv) {
     // takes under 4 ms a frame on a 1440p window, and the GPU's driver costs some 50 MB more memory and
     // 30 more threads for nothing a viewer uses (Windows 11 with Direct3D 11 on an NVIDIA card).
     if (!gpu && !SDL_getenv("SDL_RENDER_DRIVER")) SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");
+    SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON, "1"), SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON_SMALL, "1");  // (the window's icon on Windows: the program's own)
     if (!SDL_Init(SDL_INIT_VIDEO)) return fprintf(stderr, "vellum: %s\n", SDL_GetError()), 1;
     static app a;
     a.scroll_to = -1;

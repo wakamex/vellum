@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- the carrier: a deep plum rounded square -->
+  <rect x="0" y="0" width="256" height="256" rx="56" fill="#4b2f7d"/>
+  <!-- the page: cream vellum, its top right corner folded down -->
+  <path d="M64 36 H158 L196 74 V212 Q196 222 186 222 H70 Q64 222 64 212 Z" fill="#f6eedb"/>
+  <!-- the fold, a shade darker -->
+  <path d="M158 36 V66 Q158 74 166 74 H196 Z" fill="#d8c79e"/>
+  <!-- the letter: a bold v in the carrier's plum -->
+  <path d="M90 104 H116 L130 158 L144 104 H170 L144 190 H116 Z" fill="#4b2f7d"/>
+</svg>
