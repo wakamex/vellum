@@ -2,6 +2,14 @@
 
 A Markdown viewer and editor for Windows, macOS and Linux, small enough to leave open: one executable of a few megabytes, built on [gesso](https://github.com/wakamex/gesso), a C library on [Simple DirectMedia Layer (SDL)](https://www.libsdl.org/). It shows a file as GitHub does (headings, lists and task lists, quotes, code, tables, pictures, links, bold, italic and inline code), reads it again when it changes on disk, and edits its text in place.
 
+## Install on Windows
+
+```
+powershell -ExecutionPolicy Bypass -File tools\register-windows.ps1 -From PATH\TO\vellum.exe
+```
+
+copies vellum to `%LOCALAPPDATA%\Programs\vellum` and makes it what opens `.md` and `.markdown` files for the current user, with no administrator needed. Where another program is already the chosen default for `.md` (Settings, Default apps), Windows keeps that choice, and vellum is picked there instead.
+
 ## Use
 
 ```
