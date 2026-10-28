@@ -315,9 +315,10 @@ static float text_h(app *a, view_text *v, const char *text, float px, float widt
     return v->h;
 }
 
-// Each table's columns: never narrower than their longest word, and as wide as their text on one
+// Each table's columns: no narrower than their longest word where the table can be, and as wide as their text on one
 // line where `width` holds it; otherwise what is left after the words is shared out by how much more
-// each column wants.
+// each column wants. Where even the words do not fit, the widest columns
+// are cut to the same width, the most that fits, and their longest words break.
 static void table_columns(app *a, float width) {
     if (a->columns_width == width || !a->ncolumns_tables) return;
     free(a->columns);
@@ -347,6 +348,16 @@ static void table_columns(app *a, float width) {
         float *cols = a->columns + t * a->ncolumns_max, *lo = least + t * a->ncolumns_max, total = 0, floor = 0;
         for (int c = 0; c < a->ncolumns_max; c++) total += cols[c], floor += lo[c];
         if (total <= width) continue;
+        if (floor > width) {  // (even the longest words do not fit: the widest columns give way, to a cap that fits, and their words break)
+            float cap = 0, step = width;
+            for (int k = 0; k < 30; k++, step /= 2) {
+                float sum = 0;
+                for (int c = 0; c < a->ncolumns_max; c++) sum += SDL_min(lo[c], cap + step);
+                if (sum <= width) cap += step;
+            }
+            for (int c = 0; c < a->ncolumns_max; c++) cols[c] = SDL_min(lo[c], cap);
+            continue;
+        }
         float spare = SDL_max(0, width - floor), want = total - floor;
         for (int c = 0; c < a->ncolumns_max; c++) cols[c] = lo[c] + (want > 0 ? (cols[c] - lo[c]) * spare / want : 0);
     }
