@@ -41,6 +41,14 @@ Or drop a file on the window, or open one with Ctrl+O.
 
 A link to a Markdown file beside this one opens it here, a `#heading` link scrolls to that heading, and any other link opens in the system's browser. The window comes back where it was. It follows the system's light or dark theme.
 
+A style file changes the sizes and colours: `vellum.style` beside the program, or the file `--style FILE` names. vellum reads it again whenever it changes, so an open window takes each edit within a second. It holds a setting to a line, and lines starting with `#` are left out:
+
+```
+body 16               # the text's size, in points; also column (its widest), pad, indent and quote
+light.back #f4ecd8    # a colour of the light or dark theme: back, text, muted, link, code_back, rule or select
+dark.link #6cb6ff
+```
+
 ## What it costs
 
 Measured on a Windows 11 PC (16 cores, 32 GB) with the window open on a README of 7 KB, against Cursor viewing Markdown on the same machine:
@@ -66,7 +74,18 @@ zig build test                             # the parser's tests
 powershell -ExecutionPolicy Bypass -File tools\register-windows.ps1   # on Windows, after a build
 ```
 
-`vellum FILE.md --shot OUT.png [--size W H] [--scroll Y]` draws a file once without showing a window and saves the picture, for checking how it looks.
+`vellum FILE.md --shot OUT.png [--size W H] [--scroll Y] [--zoom Z] [--style FILE]` draws a file once without showing a window and saves the picture, for checking how it looks.
+
+### Dev builds
+
+A dev build (`zig build -Ddev`) says "(dev)" in its title and starts again whenever its program file is replaced, as the new build, with each window's file, scroll, zoom and editor, including unsaved text and the selection, as they were. A change to the code shows in about as long as the rebuild takes, and a change to the style file in under a second, with no rebuild.
+
+```
+tools/dev.sh FILE.md                 # rebuild at every saved source file, into zig-out/dev
+tools/windows-dev.sh [--watch]       # build for Windows and put it in place of the installed vellum, over SSH
+```
+
+`tools/windows-dev.sh` puts the build in `%LOCALAPPDATA%\Programs\vellum`, where `register-windows.ps1` installs vellum, so the `.md` files opened from Explorer use it. Windows lets a running program be renamed but not overwritten, so the running one moves aside as `vellum-N.old`, deleted at the next push. A release build does not watch its program file, so the first dev build takes over when a file is next opened. Running `register-windows.ps1` with a release build goes back to that release.
 
 ## How it is made
 

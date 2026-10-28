@@ -5,7 +5,9 @@
 //                               draw it once without showing a window and save the picture
 //   vellum FILE.md --bench [--size W H]
 //                               time the frames of scrolling down the file
+// A dev build (zig build -Ddev) starts again as the build that replaces its program file, where it was.
 #include <SDL3/SDL.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,26 +18,40 @@
 #include "gs_jobs.h"
 #include "gs_text.h"
 #include "gs_ui.h"
+#ifdef VELLUM_DEV
+#include "gs_update.h"
+#endif
 
-#define BODY 15.0f      // the text's size, in points
-#define COLUMN 860.0f   // the widest the text runs
-#define PAD 32.0f
-#define INDENT 26.0f    // a list's
-#define QUOTE 18.0f     // a quote's
+#ifdef _WIN32
+#define PROGRAM "vellum.exe"
+#else
+#define PROGRAM "vellum"
+#endif
+
 #define HISTORY 32
 
 typedef struct {
     SDL_FColor back, text, muted, link, code_back, rule, select;
 } theme;
 
-static const theme light = {
-    { 0.992f, 0.992f, 0.988f, 1 }, { 0.122f, 0.137f, 0.157f, 1 }, { 0.35f, 0.39f, 0.43f, 1 }, { 0.035f, 0.412f, 0.855f, 1 },
-    { 0.937f, 0.945f, 0.953f, 1 }, { 0.82f, 0.85f, 0.88f, 1 }, { 0.70f, 0.82f, 0.98f, 1 },
+// The sizes, in points, and the colours, which a style file may change (see read_style).
+typedef struct {
+    float body;    // the text's size
+    float column;  // the widest the text runs
+    float pad;
+    float indent;  // a list's
+    float quote;   // a quote's
+    theme light, dark;
+} style;
+
+static const style plain = {
+    15, 860, 32, 26, 18,
+    { { 0.992f, 0.992f, 0.988f, 1 }, { 0.122f, 0.137f, 0.157f, 1 }, { 0.35f, 0.39f, 0.43f, 1 }, { 0.035f, 0.412f, 0.855f, 1 },
+      { 0.937f, 0.945f, 0.953f, 1 }, { 0.82f, 0.85f, 0.88f, 1 }, { 0.70f, 0.82f, 0.98f, 1 } },
+    { { 0.051f, 0.067f, 0.090f, 1 }, { 0.902f, 0.929f, 0.953f, 1 }, { 0.57f, 0.62f, 0.67f, 1 }, { 0.267f, 0.576f, 0.973f, 1 },
+      { 0.15f, 0.17f, 0.21f, 1 }, { 0.24f, 0.27f, 0.31f, 1 }, { 0.15f, 0.30f, 0.52f, 1 } },
 };
-static const theme dark = {
-    { 0.051f, 0.067f, 0.090f, 1 }, { 0.902f, 0.929f, 0.953f, 1 }, { 0.57f, 0.62f, 0.67f, 1 }, { 0.267f, 0.576f, 0.973f, 1 },
-    { 0.15f, 0.17f, 0.21f, 1 }, { 0.24f, 0.27f, 0.31f, 1 }, { 0.15f, 0.30f, 0.52f, 1 },
-};
+static style look;
 
 // What a block of text is drawn with, made once when the file is read, and its height at a width.
 typedef struct {
@@ -76,7 +92,12 @@ typedef struct {
     size_t edit_cap;
     char message[256];
     float scroll_to;    // -1, or where to scroll the page next frame
-    Uint64 checked;     // when the file was last looked at for changes
+    Uint64 checked;     // when the files were last looked at for changes
+    char style[1024];   // the style file
+    SDL_Time styled;    // when it was last changed, as read (0 while there is none)
+    char program[1100];
+    SDL_Time built;     // when the program file was last changed, as started (for a dev build)
+    bool rebuilt;       // and it has changed since
     Uint64 frames;      // drawn, since it started
 } app;
 
@@ -84,6 +105,46 @@ static const char *ext(const char *path) {
     const char *dot = strrchr(path, '.'), *slash = SDL_max(strrchr(path, '/'), strrchr(path, '\\'));
     return dot && dot > slash ? dot : "";
 }
+
+static SDL_Time modified(const char *path) {
+    SDL_PathInfo info;
+    return path[0] && SDL_GetPathInfo(path, &info) ? info.modify_time : 0;
+}
+
+// ---- The style ----
+
+// A style file changes what `plain` sets, a setting to a line; lines starting with # are left out.
+//     body 16              a size in points: body, column, pad, indent or quote
+//     dark.back #101418    a colour of the light or dark theme: back, text, muted, link, code_back, rule or select
+static void read_style(const char *path) {
+    look = plain;
+    char *text = path[0] ? SDL_LoadFile(path, NULL) : NULL;
+    if (!text) return;
+    float *sizes[] = { &look.body, &look.column, &look.pad, &look.indent, &look.quote };
+    static const char *const size_names[] = { "body", "column", "pad", "indent", "quote" };
+    static const char *const colour_names[] = { "back", "text", "muted", "link", "code_back", "rule", "select" };
+    static const size_t colours[] = { offsetof(theme, back), offsetof(theme, text), offsetof(theme, muted), offsetof(theme, link),
+                                      offsetof(theme, code_back), offsetof(theme, rule), offsetof(theme, select) };
+    for (char *line = text, *next; line; line = next) {
+        next = strchr(line, '\n');
+        if (next) *next++ = 0;
+        char key[32], value[32];
+        if (line[0] == '#' || sscanf(line, "%31s %31s", key, value) != 2) continue;
+        bool known = false;
+        for (int i = 0; i < 5; i++)
+            if (!strcmp(key, size_names[i])) *sizes[i] = SDL_max(1, (float)atof(value)), known = true;
+        const char *dot = strchr(key, '.');
+        unsigned rgb;
+        theme *t = !strncmp(key, "light.", 6) ? &look.light : !strncmp(key, "dark.", 5) ? &look.dark : NULL;
+        for (int i = 0; t && i < 7; i++)
+            if (!strcmp(dot + 1, colour_names[i]) && strlen(value) == 7 && sscanf(value, "#%6x", &rgb) == 1)
+                *(SDL_FColor *)((char *)t + colours[i]) = (SDL_FColor){ (rgb >> 16) / 255.0f, (rgb >> 8 & 255) / 255.0f, (rgb & 255) / 255.0f, 1 }, known = true;
+        if (!known) SDL_Log("vellum: %s: not a setting: %s", path, line);
+    }
+    SDL_free(text);
+}
+
+static theme system_theme(void) { return SDL_GetSystemTheme() == SDL_SYSTEM_THEME_DARK ? look.dark : look.light; }
 
 // ---- The document as it is drawn ----
 
@@ -133,7 +194,11 @@ static void make_view(app *a) {
 
 static void set_title(app *a) {
     char title[400];
+#ifdef VELLUM_DEV
+    SDL_snprintf(title, sizeof title, "%s%s - vellum (dev)", a->dirty ? "* " : "", a->name[0] ? a->name : "vellum");
+#else
     SDL_snprintf(title, sizeof title, "%s%s - vellum", a->dirty ? "* " : "", a->name[0] ? a->name : "vellum");
+#endif
     SDL_SetWindowTitle(a->win, title);
 }
 
@@ -162,8 +227,7 @@ static bool open_file(app *a, const char *path, bool remember) {
     if (slash) slash[1] = 0;
     else a->dir[0] = 0;
     SDL_strlcpy(a->name, slash ? path + (slash - a->dir) + 1 : path, sizeof a->name);
-    SDL_PathInfo info;
-    a->modified = SDL_GetPathInfo(path, &info) ? info.modify_time : 0;
+    a->modified = modified(path);
     a->editing = a->dirty = false, a->message[0] = 0, a->scroll_to = 0;
     parse_source(a);
     set_title(a);
@@ -172,11 +236,9 @@ static bool open_file(app *a, const char *path, bool remember) {
 
 // The file changed on disk, and nothing here is unsaved: read it again, at the same place. True when it was.
 static bool watch(app *a) {
-    Uint64 now = SDL_GetTicks();
-    if (!a->path[0] || a->dirty || a->editing || now - a->checked < 1000) return false;
-    a->checked = now;
-    SDL_PathInfo info;
-    if (!SDL_GetPathInfo(a->path, &info) || info.modify_time == a->modified) return false;
+    if (!a->path[0] || a->dirty || a->editing) return false;
+    SDL_Time t = modified(a->path);
+    if (!t || t == a->modified) return false;
     float at = gs_ui_page_scroll(a->ui, "doc");
     char path[1024];
     SDL_strlcpy(path, a->path, sizeof path);
@@ -191,18 +253,19 @@ static bool save(app *a) {
         SDL_snprintf(a->message, sizeof a->message, "Could not save: %s", SDL_GetError());
         return false;
     }
-    SDL_PathInfo info;
-    a->modified = SDL_GetPathInfo(a->path, &info) ? info.modify_time : 0;
+    a->modified = modified(a->path);
     a->dirty = false;
     set_title(a);
     return true;
 }
 
-static void start_editing(app *a) {
-    a->edit_cap = a->source_len * 2 + 65536;
+// Edits the file's text, or `text` in its place.
+static void start_editing(app *a, const char *text) {
+    size_t n = text ? strlen(text) : a->source_len;
+    a->edit_cap = n * 2 + 65536;
     free(a->edit);
     a->edit = malloc(a->edit_cap);
-    memcpy(a->edit, a->source ? a->source : "", a->source_len), a->edit[a->source_len] = 0;
+    memcpy(a->edit, text ? text : a->source ? a->source : "", n), a->edit[n] = 0;
     a->editing = true;
     gs_ui_focus(a->ui, "source");
 }
@@ -244,7 +307,7 @@ static void follow(app *a, const char *href) {
 
 static float heading_px(int level) {
     static const float k[7] = { 1, 2.0f, 1.5f, 1.25f, 1.0f, 0.875f, 0.85f };
-    return BODY * k[SDL_clamp(level, 1, 6)];
+    return look.body * k[SDL_clamp(level, 1, 6)];
 }
 
 static float text_h(app *a, view_text *v, const char *text, float px, float width, gs_fontset **fonts, int nfonts) {
@@ -269,12 +332,12 @@ static void table_columns(app *a, float width) {
         gs_ui_font(a->ui, b->header ? a->fonts[FONT_BOLD] : a->fonts[FONT_PLAIN]);
         for (int c = 0; c < b->ncells; c++) {
             const char *t = b->cells[c].text ? b->cells[c].text : "";
-            a->columns[base + c] = SDL_max(a->columns[base + c], gs_ui_text_width(a->ui, t, BODY) + 22);
+            a->columns[base + c] = SDL_max(a->columns[base + c], gs_ui_text_width(a->ui, t, look.body) + 22);
             for (const char *w = t; *w;) {  // (its longest word)
                 size_t k = strcspn(w, " \t\n");
                 char word[256];
                 SDL_strlcpy(word, w, SDL_min(k + 1, sizeof word));
-                least[base + c] = SDL_max(least[base + c], gs_ui_text_width(a->ui, word, BODY) + 22);
+                least[base + c] = SDL_max(least[base + c], gs_ui_text_width(a->ui, word, look.body) + 22);
                 w += k + (w[k] != 0);
             }
         }
@@ -292,7 +355,7 @@ static void table_columns(app *a, float width) {
 
 // Where a block's text starts across, and how wide it runs.
 static void block_box(const doc_block *b, float x, float w, float *bx, float *bw) {
-    float in = b->quote * QUOTE + b->indent * INDENT;
+    float in = b->quote * look.quote + b->indent * look.indent;
     *bx = x + in, *bw = SDL_max(40, w - in);
 }
 
@@ -312,13 +375,13 @@ static float block_h(app *a, int i, float x, float w) {
     if (v->h_width == w && b->kind != DOC_IMAGE) return v->h;
     switch (b->kind) {
     case DOC_HEADING: v->h = text_h(a, &v->text, b->text.text, heading_px(b->level), bw, a->heading, FONTS) + (b->level <= 2 ? 10 : 0); break;
-    case DOC_CODE: v->h = text_h(a, &v->text, b->text.text, BODY * 0.9f, bw - 28, a->code, 1) + 24; break;
+    case DOC_CODE: v->h = text_h(a, &v->text, b->text.text, look.body * 0.9f, bw - 28, a->code, 1) + 24; break;
     case DOC_RULE: v->h = 2; break;
     case DOC_ROW: {
         table_columns(a, bw);
         float *cols = a->columns + (b->table - 1) * a->ncolumns_max, h = 0;
         for (int c = 0; c < b->ncells; c++)
-            h = SDL_max(h, text_h(a, &v->cells[c], b->cells[c].text, BODY, cols[c] - 20, b->header ? a->heading : a->fonts, FONTS));
+            h = SDL_max(h, text_h(a, &v->cells[c], b->cells[c].text, look.body, cols[c] - 20, b->header ? a->heading : a->fonts, FONTS));
         v->h = h + 14;
         break;
     }
@@ -327,10 +390,10 @@ static float block_h(app *a, int i, float x, float w) {
         if (gs_images_size(a->images, v->image, &iw, &ih) && iw > 0) {
             float s = gs_ui_scale(a->ui), shown = SDL_min(bw, iw / s);
             v->h = shown * ih / iw;
-        } else v->h = gs_ui_line_height(a->ui, BODY) + 8;
+        } else v->h = gs_ui_line_height(a->ui, look.body) + 8;
         break;
     }
-    default: v->h = text_h(a, &v->text, b->text.text, BODY, bw, a->fonts, FONTS); break;
+    default: v->h = text_h(a, &v->text, b->text.text, look.body, bw, a->fonts, FONTS); break;
     }
     v->h_width = w;
     return v->h;
@@ -349,9 +412,9 @@ static void draw_block(app *a, int i, float x, float y, float w) {
     view_block *v = &a->v[i];
     float bx, bw, h = v->h;
     block_box(b, x, w, &bx, &bw);
-    for (int q = 0; q < b->quote; q++) gs_ui_fill(a->ui, (gs_rect){ x + q * QUOTE, y - 4, 3, h + 8 }, a->t.rule);  // (the quote's bar)
+    for (int q = 0; q < b->quote; q++) gs_ui_fill(a->ui, (gs_rect){ x + q * look.quote, y - 4, 3, h + 8 }, a->t.rule);  // (the quote's bar)
     SDL_FColor text = b->quote ? a->t.muted : a->t.text;
-    if (b->marker[0]) gs_ui_text(a->ui, (gs_rect){ bx - INDENT, y, INDENT - 8, gs_ui_line_height(a->ui, BODY) }, b->marker, BODY, a->t.muted, 1);
+    if (b->marker[0]) gs_ui_text(a->ui, (gs_rect){ bx - look.indent, y, look.indent - 8, gs_ui_line_height(a->ui, look.body) }, b->marker, look.body, a->t.muted, 1);
     switch (b->kind) {
     case DOC_HEADING:
         draw_text(a, (gs_rect){ bx, y, bw, 0 }, i, -1, &v->text, &b->text, heading_px(b->level), a->heading, FONTS, text);
@@ -359,7 +422,7 @@ static void draw_block(app *a, int i, float x, float y, float w) {
         break;
     case DOC_CODE:
         gs_ui_round(a->ui, (gs_rect){ bx, y, bw, h }, 6, a->t.code_back);
-        draw_text(a, (gs_rect){ bx + 14, y + 12, bw - 28, 0 }, i, -1, &v->text, &b->text, BODY * 0.9f, a->code, 1, text);
+        draw_text(a, (gs_rect){ bx + 14, y + 12, bw - 28, 0 }, i, -1, &v->text, &b->text, look.body * 0.9f, a->code, 1, text);
         break;
     case DOC_RULE: gs_ui_fill(a->ui, (gs_rect){ bx, y, bw, 2 }, a->t.rule); break;
     case DOC_ROW: {
@@ -371,11 +434,11 @@ static void draw_block(app *a, int i, float x, float y, float w) {
             float shift = 0;  // (a cell on one line, set to the right or centred as its column says)
             if (b->cells[c].align && b->cells[c].text) {
                 gs_ui_font(a->ui, b->header ? a->fonts[FONT_BOLD] : a->fonts[FONT_PLAIN]);
-                float tw = gs_ui_text_width(a->ui, b->cells[c].text, BODY);
+                float tw = gs_ui_text_width(a->ui, b->cells[c].text, look.body);
                 gs_ui_font(a->ui, NULL);
                 if (tw < cols[c] - 20) shift = (cols[c] - 20 - tw) * (b->cells[c].align == 2 ? 1 : 0.5f);
             }
-            draw_text(a, (gs_rect){ cx + 10 + shift, y + 7, cols[c] - 20 - shift, 0 }, i, c, &v->cells[c], &b->cells[c], BODY, b->header ? a->heading : a->fonts, FONTS, text);
+            draw_text(a, (gs_rect){ cx + 10 + shift, y + 7, cols[c] - 20 - shift, 0 }, i, c, &v->cells[c], &b->cells[c], look.body, b->header ? a->heading : a->fonts, FONTS, text);
             cx += cols[c];
         }
         gs_ui_fill(a->ui, (gs_rect){ cx, y, 1, h }, a->t.rule);
@@ -392,12 +455,12 @@ static void draw_block(app *a, int i, float x, float y, float w) {
             gs_ui_texture(a->ui, (gs_rect){ bx, y, shown, shown * ih / iw }, t, NULL);
         } else {  // (while it loads, or where it cannot: its alternative text)
             gs_ui_font(a->ui, a->fonts[FONT_ITALIC]);
-            gs_ui_text(a->ui, (gs_rect){ bx, y, bw, h }, b->text.text && b->text.text[0] ? b->text.text : b->src, BODY, a->t.muted, -1);
+            gs_ui_text(a->ui, (gs_rect){ bx, y, bw, h }, b->text.text && b->text.text[0] ? b->text.text : b->src, look.body, a->t.muted, -1);
             gs_ui_font(a->ui, NULL);
         }
         break;
     }
-    default: draw_text(a, (gs_rect){ bx, y, bw, 0 }, i, -1, &v->text, &b->text, BODY, a->fonts, FONTS, text); break;
+    default: draw_text(a, (gs_rect){ bx, y, bw, 0 }, i, -1, &v->text, &b->text, look.body, a->fonts, FONTS, text); break;
     }
 }
 
@@ -432,6 +495,68 @@ static void clear_selection(app *a, float top, float bottom, const float *ys) {
     }
 }
 
+// ---- Changes on disk ----
+
+// Once a second: the file read again when it changed (watch), the style file, and in a dev build the
+// program file. True when there is something new to draw.
+static bool look_around(app *a) {
+    Uint64 now = SDL_GetTicks();
+    if (now - a->checked < 1000) return false;
+    a->checked = now;
+    bool changed = watch(a);
+    SDL_Time t = modified(a->style);
+    if (t != a->styled) {
+        a->styled = t;
+        read_style(a->style);
+        a->t = system_theme();
+        if (a->d && !a->editing) parse_source(a);  // (the colours are in the spans, the sizes in the heights)
+        changed = true;
+    }
+#ifdef VELLUM_DEV
+    t = modified(a->program);
+    if (t && t != a->built) a->built = t, a->rebuilt = true;
+#endif
+    return changed;
+}
+
+#ifdef VELLUM_DEV
+// Starts the build that replaced the program file with this window's file, scroll and zoom, and the
+// editor's text and selection or any unsaved text, each on the command line, so that every open window comes back as
+// itself. True when it started; false, with the reason shown, to stay.
+static bool restart(app *a, int argc, char **argv) {
+    const char *args[24];
+    char scroll[32], zoom[32], from[16], to[16], edit[1100] = "";
+    int n = 0;
+    args[n++] = PROGRAM;
+    for (int i = 1; i < argc; i++)  // (what it was started with that is not about where it was)
+        if (!strcmp(argv[i], "--gpu")) args[n++] = argv[i];
+        else if (!strcmp(argv[i], "--style") && i + 1 < argc) args[n++] = argv[i], args[n++] = argv[i + 1];
+    if (a->path[0]) args[n++] = a->path;
+    SDL_snprintf(scroll, sizeof scroll, "%g", gs_ui_page_scroll(a->ui, "doc"));
+    SDL_snprintf(zoom, sizeof zoom, "%g", gs_ui_zoom(a->ui));
+    args[n++] = "--scroll", args[n++] = scroll, args[n++] = "--zoom", args[n++] = zoom;
+    if (a->editing || a->dirty) {  // (unsaved text comes back in the editor)
+        char *dir = SDL_GetPrefPath("wakamex", "vellum");
+        SDL_snprintf(edit, sizeof edit, "%sedit-%llx.md", dir ? dir : "", (unsigned long long)SDL_GetPerformanceCounter());
+        SDL_free(dir);
+        const char *text = a->editing ? a->edit : a->source;
+        if (!SDL_SaveFile(edit, text, strlen(text))) {
+            SDL_Log("vellum: the new build is not started: could not keep the edit: %s", SDL_GetError());
+            return false;
+        }
+        int lo = 0, hi = 0;
+        if (a->editing) gs_ui_textarea_selection(a->ui, "source", &lo, &hi);
+        SDL_snprintf(from, sizeof from, "%d", lo), SDL_snprintf(to, sizeof to, "%d", hi);
+        args[n++] = "--edit", args[n++] = edit, args[n++] = from, args[n++] = to;
+    }
+    args[n++] = "--restarted";
+    if (gs_update_restart(NULL, PROGRAM, n, (char **)args)) return true;
+    SDL_Log("vellum: the new build could not be started: %s", SDL_GetError());
+    if (edit[0]) SDL_RemovePath(edit);
+    return false;
+}
+#endif
+
 // ---- The window ----
 
 static void SDLCALL chosen(void *user, const char *const *files, int filter) {
@@ -453,8 +578,8 @@ static void frame(app *a) {
         static const SDL_DialogFileFilter filters[] = { { "Markdown", "md;markdown" }, { "All files", "*" } };
         SDL_ShowOpenFileDialog(chosen, &open_event, a->win, filters, 2, a->dir[0] ? a->dir : NULL, false);
     }
-    if (gs_ui_key(ui, SDLK_E, SDL_KMOD_CTRL) && a->path[0]) a->editing ? stop_editing(a) : start_editing(a);
-    if (gs_ui_key(ui, SDLK_S, SDL_KMOD_CTRL) && save(a) && a->editing) stop_editing(a), start_editing(a);
+    if (gs_ui_key(ui, SDLK_E, SDL_KMOD_CTRL) && a->path[0]) a->editing ? stop_editing(a) : start_editing(a, NULL);
+    if (gs_ui_key(ui, SDLK_S, SDL_KMOD_CTRL) && save(a) && a->editing) stop_editing(a), start_editing(a, NULL);
     if (gs_ui_key(ui, SDLK_EQUALS, SDL_KMOD_CTRL) || gs_ui_key(ui, SDLK_PLUS, SDL_KMOD_CTRL)) gs_ui_set_zoom(ui, SDL_min(3, gs_ui_zoom(ui) * 1.1f));
     if (gs_ui_key(ui, SDLK_MINUS, SDL_KMOD_CTRL)) gs_ui_set_zoom(ui, SDL_max(0.5f, gs_ui_zoom(ui) / 1.1f));
     if (gs_ui_key(ui, SDLK_0, SDL_KMOD_CTRL)) gs_ui_set_zoom(ui, 1);
@@ -472,14 +597,14 @@ static void frame(app *a) {
         return;
     }
     if (!a->d) {
-        gs_ui_text(ui, (gs_rect){ area.x, area.y + area.h / 2 - 40, area.w, 30 }, a->message[0] ? a->message : "Drop a Markdown file here, or press Ctrl+O", BODY * 1.2f, a->t.muted, 0);
+        gs_ui_text(ui, (gs_rect){ area.x, area.y + area.h / 2 - 40, area.w, 30 }, a->message[0] ? a->message : "Drop a Markdown file here, or press Ctrl+O", look.body * 1.2f, a->t.muted, 0);
         gs_ui_end(ui);
         return;
     }
     if (gs_ui_key(ui, SDLK_C, SDL_KMOD_CTRL)) copy_selection(a);
-    float w = SDL_min(COLUMN, area.w - 2 * PAD), x = area.x + (area.w - w) / 2;
+    float w = SDL_min(look.column, area.w - 2 * look.pad), x = area.x + (area.w - w) / 2;
     // The heights first, to scroll to a heading asked for and to draw only what is in view.
-    float *ys = malloc(sizeof *ys * (size_t)SDL_max(1, a->d->count)), y = PAD;
+    float *ys = malloc(sizeof *ys * (size_t)SDL_max(1, a->d->count)), y = look.pad;
     for (int i = 0; i < a->d->count; i++) {
         y += space_before(&a->d->blocks[i], i ? &a->d->blocks[i - 1] : NULL);
         ys[i] = y, y += block_h(a, i, x, w);
@@ -492,7 +617,7 @@ static void frame(app *a) {
     for (int i = 0; i < a->d->count; i++)
         if (ys[i] + a->v[i].h >= top && ys[i] <= bottom) draw_block(a, i, x, page.y + ys[i], w);
     gs_ui_select_group(ui, NULL);
-    gs_ui_page_end(ui, page.y + y + PAD);
+    gs_ui_page_end(ui, page.y + y + look.pad);
     if (gs_ui_select_began(ui, "doc")) clear_selection(a, top, bottom, ys);
     free(ys);
     if (gs_images_end_frame(a->images)) gs_ui_wake(ui, 0);
@@ -502,23 +627,30 @@ static void frame(app *a) {
 static gs_fontset *mono_italic(void) { return gs_fontset_system_italic(400, true); }
 
 static const char usage[] =
-    "usage: vellum [FILE.md] [--gpu] [--shot OUT.png | --bench] [--size W H] [--scroll Y]\n"
+    "usage: vellum [FILE.md] [--gpu] [--style FILE] [--shot OUT.png | --bench] [--size W H] [--scroll Y] [--zoom Z]\n"
     "  Shows a Markdown file, reads it again when it changes, and edits it (Ctrl+E, Ctrl+S).\n"
     "  --gpu            draw with the GPU rather than SDL's software renderer\n"
+    "  --style FILE     sizes and colours to use, read again when the file changes (default: vellum.style beside the program)\n"
     "  --shot OUT.png   draw the file once without a window and save the picture\n"
     "  --bench          time the frames of scrolling down the file\n"
     "  --size W H       the window's size for --shot and --bench\n"
-    "  --scroll Y       how far down the file --shot starts, in points\n";
+    "  --scroll Y       how far down the file to start, in points\n"
+    "  --zoom Z         how large to draw it, 1 as it is (Ctrl+= and Ctrl+-)\n"
+    "  --edit TEXT A B  start in the editor with the text in the file TEXT, then delete it, selecting from A to B\n";
 
 int main(int argc, char **argv) {
-    const char *file = NULL, *shot = NULL;
+    const char *file = NULL, *shot = NULL, *style = NULL, *edit = NULL;
     bool bench = false, gpu = false;
-    int shot_w = 1100, shot_h = 900;
-    float shot_scroll = 0;
+    int shot_w = 1100, shot_h = 900, edit_from = 0, edit_to = 0;
+    float start_scroll = 0, zoom = 1;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--shot") && i + 1 < argc) shot = argv[++i];
         else if (!strcmp(argv[i], "--size") && i + 2 < argc) shot_w = atoi(argv[i + 1]), shot_h = atoi(argv[i + 2]), i += 2;
-        else if (!strcmp(argv[i], "--scroll") && i + 1 < argc) shot_scroll = (float)atof(argv[++i]);
+        else if (!strcmp(argv[i], "--scroll") && i + 1 < argc) start_scroll = (float)atof(argv[++i]);
+        else if (!strcmp(argv[i], "--zoom") && i + 1 < argc) zoom = (float)atof(argv[++i]);
+        else if (!strcmp(argv[i], "--style") && i + 1 < argc) style = argv[++i];
+        else if (!strcmp(argv[i], "--edit") && i + 3 < argc) edit = argv[i + 1], edit_from = atoi(argv[i + 2]), edit_to = atoi(argv[i + 3]), i += 3;
+        else if (!strcmp(argv[i], "--restarted")) SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");  // (started again by a dev build for the next: it does not take the keyboard)
         else if (!strcmp(argv[i], "--bench")) bench = true;
         else if (!strcmp(argv[i], "--gpu")) gpu = true;
         else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) return printf("%s", usage), 0;
@@ -537,6 +669,12 @@ int main(int argc, char **argv) {
     if (!SDL_Init(SDL_INIT_VIDEO)) return fprintf(stderr, "vellum: %s\n", SDL_GetError()), 1;
     static app a;
     a.scroll_to = -1;
+    SDL_snprintf(a.program, sizeof a.program, "%s%s", SDL_GetBasePath(), PROGRAM);
+    a.built = modified(a.program);
+    if (style) SDL_strlcpy(a.style, style, sizeof a.style);
+    else SDL_snprintf(a.style, sizeof a.style, "%svellum.style", SDL_GetBasePath());
+    a.styled = modified(a.style);
+    read_style(a.style);
     SDL_PropertiesID p = SDL_CreateProperties();
     SDL_SetStringProperty(p, SDL_PROP_WINDOW_CREATE_TITLE_STRING, "vellum");
     SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, shot || bench ? shot_w : 1000);
@@ -559,11 +697,22 @@ int main(int argc, char **argv) {
     memcpy(a.heading, heading, sizeof heading);
     a.code[0] = a.fonts[FONT_CODE];
     a.ui = gs_ui_new(a.win, a.r, a.fonts[FONT_PLAIN]);
-    a.t = SDL_GetSystemTheme() == SDL_SYSTEM_THEME_DARK ? dark : light;
+    gs_ui_set_zoom(a.ui, SDL_clamp(zoom, 0.5f, 3));
+    a.t = system_theme();
     a.jobs = gs_jobs_new(2);
     a.images = gs_images_new(a.r, a.jobs, 64 << 20);
     open_event = SDL_RegisterEvents(1);
-    if (file) open_file(&a, file, false);
+    if (file && open_file(&a, file, false) && edit) {  // (the editor as a build before left it)
+        char *text = SDL_LoadFile(edit, NULL);
+        if (text) {
+            start_editing(&a, text);
+            a.dirty = strcmp(text, a.source ? a.source : "") != 0;
+            set_title(&a);
+            gs_ui_textarea_select(a.ui, "source", edit_from, edit_to);
+            SDL_free(text);
+            SDL_RemovePath(edit);
+        }
+    }
     if (bench) {  // the time a frame takes while scrolling down the file, a few points a frame
         SDL_ShowWindow(a.win);
         for (int i = 0; i < 5; i++) frame(&a), SDL_RenderPresent(a.r);
@@ -580,10 +729,10 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (shot) {  // a few frames, for the glyphs drawn new to the atlas and the pictures loading
-        a.t = light;
+        a.t = look.light;
         if (a.d) parse_source(&a);
         for (int i = 0; i < 6; i++) {
-            if (i == 1) gs_ui_page_scroll_to(a.ui, "doc", shot_scroll, false);
+            if (i == 1) gs_ui_page_scroll_to(a.ui, "doc", start_scroll, false);
             frame(&a);
             if (i < 5) SDL_RenderPresent(a.r);
             SDL_Delay(30);
@@ -592,6 +741,7 @@ int main(int argc, char **argv) {
         if (!ok) fprintf(stderr, "vellum: %s\n", SDL_GetError());
         return ok ? 0 : 1;
     }
+    if (start_scroll > 0 && a.d) frame(&a), a.scroll_to = start_scroll;  // (a page scrolls only as far as it was laid out)
     SDL_ShowWindow(a.win);
     for (bool running = true; running;) {
         // A frame is drawn for an event, for what the interface asked a frame for, and for the file
@@ -605,11 +755,14 @@ int main(int argc, char **argv) {
                 if (e.type == SDL_EVENT_QUIT || e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) running = false;
                 else if (e.type == SDL_EVENT_DROP_FILE && e.drop.data) open_file(&a, e.drop.data, true);
                 else if (e.type == open_event) open_file(&a, e.user.data1, true), SDL_free(e.user.data1);
-                else if (e.type == SDL_EVENT_SYSTEM_THEME_CHANGED) a.t = SDL_GetSystemTheme() == SDL_SYSTEM_THEME_DARK ? dark : light, a.d ? parse_source(&a) : (void)0;
+                else if (e.type == SDL_EVENT_SYSTEM_THEME_CHANGED) a.t = system_theme(), a.d ? parse_source(&a) : (void)0;
                 gs_ui_event(a.ui, &e);
             } while (SDL_PollEvent(&e));
         }
-        if (watch(&a)) draw = true;
+        if (look_around(&a)) draw = true;
+#ifdef VELLUM_DEV
+        if (a.rebuilt && (a.rebuilt = false, restart(&a, argc, argv))) break;
+#endif
         if (!draw) continue;
         frame(&a);
         SDL_RenderPresent(a.r);
