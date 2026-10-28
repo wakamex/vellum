@@ -49,17 +49,17 @@ light.back #f4ecd8    # a colour of the light or dark theme: back, text, muted, 
 dark.link #6cb6ff
 ```
 
-## What it costs
+## Resource comparison
 
-Measured on a Windows 11 PC (16 cores, 32 GB) with the window open on a README of 7 KB, against Cursor viewing Markdown on the same machine:
+Measured on a Windows 11 PC (16 cores, 32 GB) with the window open on a README of 7 KB, against Cursor viewing Markdown and Windows 11's Notepad (version 11.2607) with the same file open, on the same machine:
 
-| | vellum | Cursor |
-|---|---|---|
-| Processes | 1 | 16 |
-| Memory, private | 25 MB | 1,784 MB |
-| Threads | 10 | (not measured) |
-| CPU while idle, over 10 s | 0% | 2 to 10% of one core |
-| On disk | 3.3 MB, one file | 2.5 GB |
+| | vellum | Notepad | Cursor |
+|---|---|---|---|
+| Processes | 1 | 2 | 16 |
+| Memory, private | 25 MB | 32 to 42 MB | 1,784 MB |
+| Threads | 10 | 58 to 63 | (not measured) |
+| CPU while idle, over 10 s | 0% | 0% | 2 to 10% of one core |
+| On disk | 3.5 MB, one file | 18 MB | 2.5 GB |
 
 It draws with SDL's software renderer: a frame of scrolling takes 3.9 ms at 1920 by 1080 and 3.7 ms at 2560 by 1400, the slowest 5.7 ms, while drawing with the GPU through Direct3D 11 costs some 50 MB more memory and 30 more threads for frames of 2 ms. `--gpu` draws with the GPU. `vellum FILE.md --bench --size W H` times the frames of scrolling a file.
 
