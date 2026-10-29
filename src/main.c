@@ -336,6 +336,27 @@ static float text_h(app *a, view_text *v, const char *text, float px, float widt
 // line where `width` holds it; otherwise what is left after the words is shared out by how much more
 // each column wants. Where even the words do not fit, the widest columns
 // are cut to the same width, the most that fits, and their longest words break.
+// How wide text[from, to) is on one line, each stretch in the font its span names (fonts[0] where
+// no span is), as gs_ui_text_spans draws it.
+static float spans_width(app *a, const doc_text *t, gs_fontset *const *fonts, int from, int to) {
+    float w = 0;
+    for (int at = from; at < to;) {
+        int end = to, font = 0;
+        for (int i = 0; i < t->nspans; i++) {
+            const doc_span *s = &t->spans[i];
+            if (s->start <= at && at < s->end) font = s->font, end = SDL_min(end, s->end);
+            else if (s->start > at) end = SDL_min(end, s->start);
+        }
+        char *part = SDL_strndup(t->text + at, (size_t)(end - at));
+        gs_ui_font(a->ui, fonts[font]);
+        w += gs_ui_text_width(a->ui, part, look.body);
+        SDL_free(part);
+        at = end;
+    }
+    gs_ui_font(a->ui, NULL);
+    return w;
+}
+
 static void table_columns(app *a, float width) {
     if (a->columns_width == width || !a->ncolumns_tables) return;
     free(a->columns);
@@ -347,19 +368,17 @@ static void table_columns(app *a, float width) {
         doc_block *b = &a->d->blocks[i];
         if (b->kind != DOC_ROW) continue;
         int base = (b->table - 1) * a->ncolumns_max;
-        gs_ui_font(a->ui, b->header ? a->fonts[FONT_BOLD] : a->fonts[FONT_PLAIN]);
+        gs_fontset **fonts = b->header ? a->heading : a->fonts;
         for (int c = 0; c < b->ncells; c++) {
-            const char *t = b->cells[c].text ? b->cells[c].text : "";
-            a->columns[base + c] = SDL_max(a->columns[base + c], gs_ui_text_width(a->ui, t, look.body) + 22);
-            for (const char *w = t; *w;) {  // (its longest word)
-                size_t k = strcspn(w, " \t\n");
-                char word[256];
-                SDL_strlcpy(word, w, SDL_min(k + 1, sizeof word));
-                least[base + c] = SDL_max(least[base + c], gs_ui_text_width(a->ui, word, look.body) + 22);
-                w += k + (w[k] != 0);
+            const doc_text *t = &b->cells[c];
+            if (!t->text) continue;
+            a->columns[base + c] = SDL_max(a->columns[base + c], spans_width(a, t, fonts, 0, t->len) + 22);
+            for (int w = 0; w < t->len;) {  // (its longest word)
+                int k = (int)strcspn(t->text + w, " \t\n");
+                least[base + c] = SDL_max(least[base + c], spans_width(a, t, fonts, w, w + k) + 22);
+                w += k + 1;
             }
         }
-        gs_ui_font(a->ui, NULL);
     }
     for (int t = 0; t < a->ncolumns_tables; t++) {
         float *cols = a->columns + t * a->ncolumns_max, *lo = least + t * a->ncolumns_max, total = 0, floor = 0;
@@ -461,9 +480,7 @@ static void draw_block(app *a, int i, float x, float y, float w) {
             gs_ui_fill(a->ui, (gs_rect){ cx, y, 1, h }, a->t.rule);
             float shift = 0;  // (a cell on one line, set to the right or centred as its column says)
             if (b->cells[c].align && b->cells[c].text) {
-                gs_ui_font(a->ui, b->header ? a->fonts[FONT_BOLD] : a->fonts[FONT_PLAIN]);
-                float tw = gs_ui_text_width(a->ui, b->cells[c].text, look.body);
-                gs_ui_font(a->ui, NULL);
+                float tw = spans_width(a, &b->cells[c], b->header ? a->heading : a->fonts, 0, b->cells[c].len);
                 if (tw < cols[c] - 20) shift = (cols[c] - 20 - tw) * (b->cells[c].align == 2 ? 1 : 0.5f);
             }
             draw_text(a, (gs_rect){ cx + 10 + shift, y + 7, cols[c] - 20 - shift, 0 }, i, c, &v->cells[c], &b->cells[c], look.body, b->header ? a->heading : a->fonts, FONTS, text);
