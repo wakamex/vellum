@@ -6,6 +6,8 @@
 //   vellum FILE.md --bench [--size W H]
 //                               time the frames of scrolling down the file
 // A dev build (zig build -Ddev) starts again as the build that replaces its program file, where it was.
+// A test build (zig build -Dbuild=NAME, from tools/publish-update) keeps itself up to date from the
+// update server, once its user has said yes.
 #include <SDL3/SDL.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -18,7 +20,7 @@
 #include "gs_jobs.h"
 #include "gs_text.h"
 #include "gs_ui.h"
-#ifdef VELLUM_DEV
+#if defined(VELLUM_DEV) || defined(VELLUM_BUILD)
 #include "gs_update.h"
 #endif
 
@@ -26,6 +28,14 @@
 #define PROGRAM "vellum.exe"
 #else
 #define PROGRAM "vellum"
+#endif
+
+#ifdef VELLUM_BUILD
+#define UPDATE_SERVER "http://updates.waka.mx/vellum/manifest.txt"
+static const uint8_t update_key[32] = {  // the public half of the key tools/publish-update signs with
+    0x01, 0xca, 0xd5, 0x77, 0xca, 0xab, 0xb6, 0x73, 0x77, 0xfc, 0xd3, 0x5b, 0x19, 0x8b, 0xd7, 0x16,
+    0x45, 0xe8, 0x6d, 0xfd, 0x4b, 0x86, 0x0b, 0xe5, 0xc5, 0xa8, 0x13, 0x37, 0x9d, 0xc7, 0x07, 0x2a,
+};
 #endif
 
 #define HISTORY 32
@@ -98,6 +108,10 @@ typedef struct {
     char program[1100];
     SDL_Time built;     // when the program file was last changed, as started (for a dev build)
     bool rebuilt;       // and it has changed since
+#ifdef VELLUM_BUILD
+    gs_update *update;  // a test build looking for the next one
+    Uint64 input_at;    // when a key or the pointer was last pressed
+#endif
     Uint64 frames;      // drawn, since it started
 } app;
 
@@ -196,6 +210,9 @@ static void set_title(app *a) {
     char title[400];
 #ifdef VELLUM_DEV
     SDL_snprintf(title, sizeof title, "%s%s - vellum (dev)", a->dirty ? "* " : "", a->name[0] ? a->name : "vellum");
+#elif defined(VELLUM_BUILD)
+    SDL_snprintf(title, sizeof title, "%s%s - vellum test build " VELLUM_BUILD "%s", a->dirty ? "* " : "", a->name[0] ? a->name : "vellum",
+                 gs_update_consent(a->update) == GS_UPDATE_YES ? "" : ", updates off (Ctrl+U)");
 #else
     SDL_snprintf(title, sizeof title, "%s%s - vellum", a->dirty ? "* " : "", a->name[0] ? a->name : "vellum");
 #endif
@@ -530,8 +547,9 @@ static bool look_around(app *a) {
     return changed;
 }
 
-#ifdef VELLUM_DEV
-// Starts the build that replaced the program file with this window's file, scroll and zoom, and the
+#if defined(VELLUM_DEV) || defined(VELLUM_BUILD)
+// Starts the build that replaced the program file (a dev build's) or the one the update put in
+// place (a test build's) with this window's file, scroll and zoom, and the
 // editor's text and selection or any unsaved text, each on the command line, so that every open window comes back as
 // itself. True when it started; false, with the reason shown, to stay.
 static bool restart(app *a, int argc, char **argv) {
@@ -560,11 +578,34 @@ static bool restart(app *a, int argc, char **argv) {
         SDL_snprintf(from, sizeof from, "%d", lo), SDL_snprintf(to, sizeof to, "%d", hi);
         args[n++] = "--edit", args[n++] = edit, args[n++] = from, args[n++] = to;
     }
+#ifdef VELLUM_BUILD
+    if (gs_update_restart_as(a->update, n, (char **)args)) return true;  // (which adds --restarted)
+#else
     args[n++] = "--restarted";
     if (gs_update_restart(NULL, PROGRAM, n, (char **)args)) return true;
+#endif
     SDL_Log("vellum: the new build could not be started: %s", SDL_GetError());
     if (edit[0]) SDL_RemovePath(edit);
     return false;
+}
+#endif
+
+#ifdef VELLUM_BUILD
+// Asks once whether to keep this test build up to date; until the answer is yes it does not look.
+static void start_update(app *a) {
+    gs_update_config c = { .build = VELLUM_BUILD, .manifest = UPDATE_SERVER, .key = update_key, .program = PROGRAM, .agent = "vellum",
+                           .gap_ms = 1 };  // (no wait between restarts: each comes back where it was)
+    a->update = gs_update_start(&c);
+    if (gs_update_consent(a->update) == GS_UPDATE_ASK) {
+        const SDL_MessageBoxButtonData buttons[] = { { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Keep it up to date" }, { SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Not now" } };
+        const SDL_MessageBoxData box = { SDL_MESSAGEBOX_INFORMATION, a->win, "vellum test build " VELLUM_BUILD,
+                                         GS_UPDATE_NOTICE "\n\nPress Ctrl+U in vellum to turn it on or off.", 2, buttons, NULL };
+        int yes = 0;
+        SDL_ShowMessageBox(&box, &yes);
+        gs_update_set_consent(a->update, yes == 1);
+    }
+    if (gs_update_rolled_back(a->update)) SDL_Log("vellum: back on the build before: the newest kept failing");
+    set_title(a);
 }
 #endif
 
@@ -589,6 +630,9 @@ static void frame(app *a) {
         static const SDL_DialogFileFilter filters[] = { { "Markdown", "md;markdown" }, { "All files", "*" } };
         SDL_ShowOpenFileDialog(chosen, &open_event, a->win, filters, 2, a->dir[0] ? a->dir : NULL, false);
     }
+#ifdef VELLUM_BUILD
+    if (gs_ui_key(ui, SDLK_U, SDL_KMOD_CTRL)) gs_update_set_consent(a->update, gs_update_consent(a->update) != GS_UPDATE_YES), set_title(a);
+#endif
     if (gs_ui_key(ui, SDLK_E, SDL_KMOD_CTRL) && a->path[0]) a->editing ? stop_editing(a) : start_editing(a, NULL);
     if (gs_ui_key(ui, SDLK_S, SDL_KMOD_CTRL) && save(a) && a->editing) stop_editing(a), start_editing(a, NULL);
     if (gs_ui_key(ui, SDLK_EQUALS, SDL_KMOD_CTRL) || gs_ui_key(ui, SDLK_PLUS, SDL_KMOD_CTRL)) gs_ui_set_zoom(ui, SDL_min(3, gs_ui_zoom(ui) * 1.1f));
@@ -754,6 +798,9 @@ int main(int argc, char **argv) {
     }
     if (start_scroll > 0 && a.d) frame(&a), a.scroll_to = start_scroll;  // (a page scrolls only as far as it was laid out)
     SDL_ShowWindow(a.win);
+#ifdef VELLUM_BUILD
+    start_update(&a);
+#endif
     for (bool running = true; running;) {
         // A frame is drawn for an event, for what the interface asked a frame for, and for the file
         // read again; in between it sleeps, waking once a second only to look at the file.
@@ -767,6 +814,9 @@ int main(int argc, char **argv) {
                 else if (e.type == SDL_EVENT_DROP_FILE && e.drop.data) open_file(&a, e.drop.data, true);
                 else if (e.type == open_event) open_file(&a, e.user.data1, true), SDL_free(e.user.data1);
                 else if (e.type == SDL_EVENT_SYSTEM_THEME_CHANGED) a.t = system_theme(), a.d ? parse_source(&a) : (void)0;
+#ifdef VELLUM_BUILD
+                if (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_WHEEL) a.input_at = SDL_GetTicks();
+#endif
                 gs_ui_event(a.ui, &e);
             } while (SDL_PollEvent(&e));
         }
@@ -774,12 +824,19 @@ int main(int argc, char **argv) {
 #ifdef VELLUM_DEV
         if (a.rebuilt && (a.rebuilt = false, restart(&a, argc, argv))) break;
 #endif
+#ifdef VELLUM_BUILD
+        // A newer build in place, two minutes without input, and nothing unsaved (which would come back, but is not risked)
+        if (gs_update_due(a.update, a.dirty, a.input_at) && restart(&a, argc, argv)) break;
+#endif
         if (!draw) continue;
         frame(&a);
         SDL_RenderPresent(a.r);
         a.frames++;
     }
     if (SDL_getenv("VELLUM_FRAMES")) fprintf(stderr, "vellum: %llu frames drawn\n", (unsigned long long)a.frames);  // (for checking that it sleeps)
+#ifdef VELLUM_BUILD
+    gs_update_free(a.update);  // (a run that ends without it counts against a build on trial)
+#endif
     gs_ui_free(a.ui);
     free_view(&a);
     gs_images_free(a.images), gs_jobs_free(a.jobs);

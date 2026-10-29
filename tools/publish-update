@@ -1,0 +1,103 @@
+#!/usr/bin/env -S uv run --no-project --with cryptography python3
+"""Publishes the current commit for Windows, for test copies of vellum to fetch within a minute.
+
+    tools/publish-update             build the current commit for Windows and publish it
+    tools/publish-update --to PLACE  publish to PLACE instead
+
+The build is release/stage.sh's Windows archive, named after the commit's short hash (-Dbuild),
+which is what makes a copy look for updates; release builds have no name and never do. PLACE is
+HOST:FOLDER (by default hetzner:/srv/vellum-updates, served at the address in src/main.c) or a local
+folder. It gets files/SHA256 for vellum.exe, LICENSE and THIRD-PARTY-LICENSES.txt (the archive's
+license texts in one file), a manifest naming the build and each file's name, hash and size, the
+manifest's signature (manifest.txt.sig) with the key in ~/.config/vellum/update-signing.key, and the
+archive as vellum-test-windows.zip for a first install, linked from index.html, which warns that it
+updates itself and restarts. The files go up before the manifest, which goes up whole, so a copy
+never reads one that names a file not yet there. The tree must be clean, since the build is named
+after the commit.
+"""
+
+import argparse
+import hashlib
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import zipfile
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+KEY = os.path.expanduser("~/.config/vellum/update-signing.key")
+ZIP = "vellum-test-windows.zip"
+PAGE = """<!doctype html>
+<meta charset="utf-8">
+<title>vellum test build {build}</title>
+<h1>vellum test build {build}</h1>
+<p>This is a test build of vellum, the Markdown viewer and editor, for people testing it with its author. It can keep itself up to date with every new commit: once you say yes on its first run, it downloads each new build and restarts into it when you have left it alone for a couple of minutes, coming back as it was, with each window's file and place. Press Ctrl+U in vellum to turn this off again.</p>
+<p><a href="{zip}">{zip}</a> (Windows). Unpack it and run <code>vellum.exe</code>, or <code>powershell -ExecutionPolicy Bypass -File register-windows.ps1</code> to install it for your user and open <code>.md</code> files with it.</p>
+<p>For a build that never updates itself, download a release from <a href="https://github.com/wakamex/vellum/releases">GitHub Releases</a>.</p>
+"""
+
+
+def run(*command, **kw):
+    subprocess.run(command, check=True, **kw)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--to", default="hetzner:/srv/vellum-updates")
+    args = parser.parse_args()
+    if subprocess.run(["git", "-C", ROOT, "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True).stdout.strip():
+        sys.exit("the tree has changes that are not committed: a build is published from a commit")
+    build = subprocess.run(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    with open(KEY, "rb") as f:
+        key = Ed25519PrivateKey.from_private_bytes(f.read())
+    with tempfile.TemporaryDirectory() as out:
+        staged = subprocess.run([os.path.join(ROOT, "release", "stage.sh"), "windows", os.path.join(out, "stage")], check=True,
+                                capture_output=True, text=True, env={**os.environ, "VELLUM_BUILD": build}).stdout.strip().splitlines()[-1]
+        shutil.move(staged, os.path.join(out, ZIP))
+        files = {}
+        with zipfile.ZipFile(os.path.join(out, ZIP)) as z:
+            for name in z.namelist():
+                parts = name.split("/")
+                if parts[1:] in (["vellum.exe"], ["LICENSE"]):
+                    files[parts[-1]] = z.read(name)
+            # (what is compiled in, one license after another, since a manifest names files beside the program only)
+            licenses = sorted(i for i in z.namelist() if "/licenses/" in i and not i.endswith("/"))
+            files["THIRD-PARTY-LICENSES.txt"] = b"".join(
+                f"==== {i.split('/licenses/', 1)[1]} ====\n\n".encode() + z.read(i).rstrip() + b"\n\n" for i in licenses)
+        os.makedirs(os.path.join(out, "files"))
+        lines = [f"build {build}"]
+        for name in ["vellum.exe", "LICENSE", "THIRD-PARTY-LICENSES.txt"]:
+            digest = hashlib.sha256(files[name]).hexdigest()
+            with open(os.path.join(out, "files", digest), "wb") as f:
+                f.write(files[name])
+            lines.append(f"file {name} {digest} {len(files[name])}")
+        manifest = "\n".join(lines) + "\n"
+        with open(os.path.join(out, "manifest.txt"), "w") as f:
+            f.write(manifest)
+        with open(os.path.join(out, "manifest.txt.sig"), "w") as f:
+            f.write(key.sign(manifest.encode()).hex() + "\n")
+        with open(os.path.join(out, "index.html"), "w") as f:
+            f.write(PAGE.format(build=build, zip=ZIP))
+        if ":" in args.to:
+            host, place = args.to.split(":", 1)
+            run("ssh", "-o", "BatchMode=yes", host, f"mkdir -p {place}/files {place}/next")
+            run("scp", "-q", *[os.path.join(out, "files", d) for d in os.listdir(os.path.join(out, "files"))], f"{host}:{place}/files/")
+            run("scp", "-q", os.path.join(out, "manifest.txt"), os.path.join(out, "manifest.txt.sig"), os.path.join(out, ZIP), os.path.join(out, "index.html"), f"{host}:{place}/next/")
+            # (the signature first, then the manifest it signs: one read between the two sees a
+            # mismatch and is tried again a minute later)
+            run("ssh", "-o", "BatchMode=yes", host, f"cd {place} && mv next/{ZIP} next/index.html . && mv next/manifest.txt.sig . && mv next/manifest.txt . && chmod -R a+rX {place}")
+        else:
+            os.makedirs(os.path.join(args.to, "files"), exist_ok=True)
+            for d in os.listdir(os.path.join(out, "files")):
+                shutil.copyfile(os.path.join(out, "files", d), os.path.join(args.to, "files", d))
+            for name in (ZIP, "index.html", "manifest.txt.sig", "manifest.txt"):
+                shutil.copyfile(os.path.join(out, name), os.path.join(args.to, name + ".part"))
+                os.replace(os.path.join(args.to, name + ".part"), os.path.join(args.to, name))
+    print(f"published build {build} to {args.to}")
+
+
+if __name__ == "__main__":
+    main()

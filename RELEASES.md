@@ -43,3 +43,7 @@ gh release verify-asset vX.Y.Z ASSET --repo wakamex/vellum
 
 - Turn on immutable releases in the repository settings.
 - Once `release-eligible / validate` has passed on `main`, add a tag ruleset named `Validated release tags` for `refs/tags/v*` that requires that check (from the GitHub Actions app that produced it), with no bypass actors, deletion restricted and non-fast-forward updates blocked.
+
+## Test builds
+
+`tools/publish-update` publishes the current commit for Windows as a test build, which keeps itself up to date from `http://updates.waka.mx/vellum/`: `release/stage.sh`'s Windows archive built with `VELLUM_BUILD` set to the commit's short hash, and a manifest of `vellum.exe`, `LICENSE` and `THIRD-PARTY-LICENSES.txt` (the archive's `licenses/` in one file) signed with `~/.config/vellum/update-signing.key`. These are not releases: no tag, notes or GitHub Release. `AGENTS.md` says when they are published.

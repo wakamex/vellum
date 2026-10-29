@@ -3,7 +3,8 @@
 #   release/stage.sh linux|windows OUT_DIR
 # Writes OUT_DIR/vellum-vVERSION-x86_64-linux.tar.gz or OUT_DIR/vellum-vVERSION-x86_64-windows.zip,
 # VERSION being build.zig.zon's .version. Run from a clean checkout; zig 0.17 fetches the
-# dependencies into zig-pkg/, where their license texts are read from.
+# dependencies into zig-pkg/, where their license texts are read from. With VELLUM_BUILD set, the
+# program is that test build, which keeps itself up to date (tools/publish-update).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -28,7 +29,7 @@ package() {
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-zig build -Doptimize=ReleaseSmall -Dtarget="$zig_target" -p "$work/prefix"
+zig build -Doptimize=ReleaseSmall -Dtarget="$zig_target" ${VELLUM_BUILD:+-Dbuild="$VELLUM_BUILD"} -p "$work/prefix"
 
 stage=$work/$name
 mkdir -p "$stage/licenses"
