@@ -5,7 +5,6 @@
 //                               draw it once without showing a window and save the picture
 //   vellum FILE.md --bench [--size W H]
 //                               time the frames of scrolling down the file
-// A dev build (zig build -Ddev) starts again as the build that replaces its program file, where it was.
 // A test build (zig build -Dbuild=NAME, from tools/publish-update) keeps itself up to date from the
 // update server, once its user has said yes.
 #include <SDL3/SDL.h>
@@ -20,7 +19,7 @@
 #include "gs_jobs.h"
 #include "gs_text.h"
 #include "gs_ui.h"
-#if defined(VELLUM_DEV) || defined(VELLUM_BUILD)
+#ifdef VELLUM_BUILD
 #include "gs_update.h"
 #endif
 
@@ -105,9 +104,6 @@ typedef struct {
     Uint64 checked;     // when the files were last looked at for changes
     char style[1024];   // the style file
     SDL_Time styled;    // when it was last changed, as read (0 while there is none)
-    char program[1100];
-    SDL_Time built;     // when the program file was last changed, as started (for a dev build)
-    bool rebuilt;       // and it has changed since
 #ifdef VELLUM_BUILD
     gs_update *update;  // a test build looking for the next one
     Uint64 input_at;    // when a key or the pointer was last pressed
@@ -208,9 +204,7 @@ static void make_view(app *a) {
 
 static void set_title(app *a) {
     char title[400];
-#ifdef VELLUM_DEV
-    SDL_snprintf(title, sizeof title, "%s%s - vellum (dev)", a->dirty ? "* " : "", a->name[0] ? a->name : "vellum");
-#elif defined(VELLUM_BUILD)
+#ifdef VELLUM_BUILD
     SDL_snprintf(title, sizeof title, "%s%s - vellum test build " VELLUM_BUILD "%s", a->dirty ? "* " : "", a->name[0] ? a->name : "vellum",
                  gs_update_consent(a->update) == GS_UPDATE_YES ? "" : ", updates off (Ctrl+U)");
 #else
@@ -542,8 +536,8 @@ static void clear_selection(app *a, float top, float bottom, const float *ys) {
 
 // ---- Changes on disk ----
 
-// Once a second: the file read again when it changed (watch), the style file, and in a dev build the
-// program file. True when there is something new to draw.
+// Once a second: the file read again when it changed (watch), and the style file. True when there
+// is something new to draw.
 static bool look_around(app *a) {
     Uint64 now = SDL_GetTicks();
     if (now - a->checked < 1000) return false;
@@ -557,18 +551,13 @@ static bool look_around(app *a) {
         if (a->d && !a->editing) parse_source(a);  // (the colours are in the spans, the sizes in the heights)
         changed = true;
     }
-#ifdef VELLUM_DEV
-    t = modified(a->program);
-    if (t && t != a->built) a->built = t, a->rebuilt = true;
-#endif
     return changed;
 }
 
-#if defined(VELLUM_DEV) || defined(VELLUM_BUILD)
-// Starts the build that replaced the program file (a dev build's) or the one the update put in
-// place (a test build's) with this window's file, scroll and zoom, and the
-// editor's text and selection or any unsaved text, each on the command line, so that every open window comes back as
-// itself. True when it started; false, with the reason shown, to stay.
+#ifdef VELLUM_BUILD
+// Starts the build the update put in place with this window's file, scroll and zoom, and the
+// editor's text and selection or any unsaved text, each on the command line, so that every open
+// window comes back as itself. True when it started; false, with the reason logged, to stay.
 static bool restart(app *a, int argc, char **argv) {
     const char *args[24];
     char scroll[32], zoom[32], from[16], to[16], edit[1100] = "";
@@ -595,12 +584,7 @@ static bool restart(app *a, int argc, char **argv) {
         SDL_snprintf(from, sizeof from, "%d", lo), SDL_snprintf(to, sizeof to, "%d", hi);
         args[n++] = "--edit", args[n++] = edit, args[n++] = from, args[n++] = to;
     }
-#ifdef VELLUM_BUILD
     if (gs_update_restart_as(a->update, n, (char **)args)) return true;  // (which adds --restarted)
-#else
-    args[n++] = "--restarted";
-    if (gs_update_restart(NULL, PROGRAM, n, (char **)args)) return true;
-#endif
     SDL_Log("vellum: the new build could not be started: %s", SDL_GetError());
     if (edit[0]) SDL_RemovePath(edit);
     return false;
@@ -722,7 +706,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--zoom") && i + 1 < argc) zoom = (float)atof(argv[++i]);
         else if (!strcmp(argv[i], "--style") && i + 1 < argc) style = argv[++i];
         else if (!strcmp(argv[i], "--edit") && i + 3 < argc) edit = argv[i + 1], edit_from = atoi(argv[i + 2]), edit_to = atoi(argv[i + 3]), i += 3;
-        else if (!strcmp(argv[i], "--restarted")) SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");  // (started again by a dev build for the next: it does not take the keyboard)
+        else if (!strcmp(argv[i], "--restarted")) SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");  // (started again by a test build for the next: it does not take the keyboard)
         else if (!strcmp(argv[i], "--bench")) bench = true;
         else if (!strcmp(argv[i], "--gpu")) gpu = true;
         else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) return printf("%s", usage), 0;
@@ -741,8 +725,6 @@ int main(int argc, char **argv) {
     if (!SDL_Init(SDL_INIT_VIDEO)) return fprintf(stderr, "vellum: %s\n", SDL_GetError()), 1;
     static app a;
     a.scroll_to = -1;
-    SDL_snprintf(a.program, sizeof a.program, "%s%s", SDL_GetBasePath(), PROGRAM);
-    a.built = modified(a.program);
     if (style) SDL_strlcpy(a.style, style, sizeof a.style);
     else SDL_snprintf(a.style, sizeof a.style, "%svellum.style", SDL_GetBasePath());
     a.styled = modified(a.style);
@@ -838,9 +820,6 @@ int main(int argc, char **argv) {
             } while (SDL_PollEvent(&e));
         }
         if (look_around(&a)) draw = true;
-#ifdef VELLUM_DEV
-        if (a.rebuilt && (a.rebuilt = false, restart(&a, argc, argv))) break;
-#endif
 #ifdef VELLUM_BUILD
         // A newer build in place, two minutes without input, and nothing unsaved (which would come back, but is not risked)
         if (gs_update_due(a.update, a.dirty, a.input_at) && restart(&a, argc, argv)) break;

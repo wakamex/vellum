@@ -1,6 +1,5 @@
 // vellum on gesso, which it expects at ../gesso.
 //   zig build                 zig-out/bin/vellum
-//   zig build -Ddev           one that starts again as each new build (tools/dev.sh)
 //   zig build -Dbuild=NAME    a test build, which keeps itself up to date (tools/publish-update)
 //   zig build test            the parser's tests
 const std = @import("std");
@@ -18,13 +17,11 @@ fn parser(b: *std.Build, mod: *std.Build.Module) void {
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const dev = b.option(bool, "dev", "A dev build: starts again, where it was, when its program file is replaced") orelse false;
     const gesso = b.dependency("gesso", .{ .target = target, .optimize = optimize }).artifact("gesso");
 
     const mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true, .strip = optimize != .debug });
     parser(b, mod);
     mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{"main.c"}, .flags = flags });
-    if (dev) mod.addCMacro("VELLUM_DEV", "1");
     // The build's name, given by tools/publish-update; a build without one never updates itself.
     if (b.option([]const u8, "build", "Name this a test build, which keeps itself up to date (tools/publish-update)")) |name|
         mod.addCMacro("VELLUM_BUILD", b.fmt("\"{s}\"", .{name}));

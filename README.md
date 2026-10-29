@@ -76,17 +76,6 @@ powershell -ExecutionPolicy Bypass -File tools\register-windows.ps1   # on Windo
 
 `vellum FILE.md --shot OUT.png [--size W H] [--scroll Y] [--zoom Z] [--style FILE]` draws a file once without showing a window and saves the picture, for checking how it looks.
 
-### Dev builds
-
-A dev build (`zig build -Ddev`) says "(dev)" in its title and starts again whenever its program file is replaced, as the new build, with each window's file, scroll, zoom and editor, including unsaved text and the selection, as they were. A change to the code shows in about as long as the rebuild takes, and a change to the style file in under a second, with no rebuild.
-
-```
-tools/dev.sh FILE.md                 # rebuild at every saved source file, into zig-out/dev
-tools/windows-dev.sh [--watch]       # build for Windows and put it in place of the installed vellum, over SSH
-```
-
-`tools/windows-dev.sh` puts the build in `%LOCALAPPDATA%\Programs\vellum`, where `register-windows.ps1` installs vellum, so the `.md` files opened from Explorer use it. Windows lets a running program be renamed but not overwritten, so the running one moves aside as `vellum-N.old`, deleted at the next push. A release build does not watch its program file, so the first dev build takes over when a file is next opened. Running `register-windows.ps1` with a release build goes back to that release.
-
 ## How it is made
 
 [md4c](https://github.com/mity/md4c) (MIT licence, vendored in `vendor/md4c`) parses the Markdown as GitHub writes it. `src/doc.c` turns its events into blocks of text with spans for fonts, links and inline code, and `src/main.c` lays them out with gesso's wrapped text in several fonts (`gs_ui_text_spans`), which also gives selection across paragraphs and clickable links. Only what is on screen is shaped and drawn, and the window draws nothing while nothing changes.
